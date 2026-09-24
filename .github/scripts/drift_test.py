@@ -210,6 +210,32 @@ class PiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             agent.parse_events(self.event_stream() + "\n" + json.dumps(failed))
 
+    def test_routing_keeps_failure_distinct_from_generator(self):
+        attempt = {"provider": "test-provider", "model": "test-model", "stop_reason": "error"}
+        error = agent.PiInferenceError("private diagnostic")
+        error.routing = [attempt]
+        env = dict(OMNIROUTE_BASE_URL="https://gateway.invalid/v1", OMNIROUTE_API_KEY="secret-value")
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "facts.json").write_text("{}")
+            with patch.dict(os.environ, env), patch("sys.argv", ["test", folder]), \
+                    patch.object(agent, "summarize", side_effect=error):
+                agent.main()
+            result = json.loads(Path(folder, "ai.json").read_text())
+        self.assertEqual(result["routing"], [attempt])
+        self.assertNotIn("generator", result)
+        report = drift.routing_report(result)
+        self.assertIn("AI 브리핑 미완료", report)
+        self.assertIn("test-provider", report)
+        self.assertIn("미제공", report)
+
+    def test_routing_redacts_nested_credentials(self):
+        data = {"generator": {"provider": "secret-key", "model": "host.invalid"},
+                "routing": [{"request_id": "secret-key"}], "number": 200}
+        cleaned = agent.redact(data, ("secret-key", "host.invalid"))
+        self.assertNotIn("secret-key", json.dumps(cleaned))
+        self.assertNotIn("host.invalid", json.dumps(cleaned))
+        self.assertEqual(cleaned["number"], 200)
+
     def test_combo_default_and_credentials_are_redacted(self):
         env = dict(OMNIROUTE_BASE_URL="https://gateway.invalid/v1", OMNIROUTE_API_KEY="secret-value")
         with tempfile.TemporaryDirectory() as folder:
@@ -250,14 +276,19 @@ class PiRuntimeTests(unittest.TestCase):
                         }} for i, name in enumerate(("facts.json", "upstream.patch", "fork.patch"))
                     ]}
                     finish = "tool_calls"
-                chunks = [{"id": "test", "object": "chat.completion.chunk", "model": "auto",
+                response_model = "body-writer" if done else "body-reader"
+                chunks = [{"id": "test", "object": "chat.completion.chunk", "model": response_model,
                            "choices": [{"index": 0, "delta": delta, "finish_reason": None}]},
-                          {"id": "test", "object": "chat.completion.chunk", "model": "auto",
+                          {"id": "test", "object": "chat.completion.chunk", "model": response_model,
                            "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]}]
                 data = ("".join("data: " + json.dumps(c) + "\n\n" for c in chunks) + "data: [DONE]\n\n").encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "text/event-stream")
                 self.send_header("Content-Length", str(len(data)))
+                self.send_header("X-OmniRoute-Provider", "writer-provider" if done else "reader-provider")
+                self.send_header("X-OmniRoute-Model", "writer-model" if done else "reader-model")
+                self.send_header("X-OmniRoute-Fallback-Attempts", "1")
+                self.send_header("X-OmniRoute-Connection", "private-connection-id")
                 self.end_headers()
                 self.wfile.write(data)
 
@@ -273,6 +304,16 @@ class PiRuntimeTests(unittest.TestCase):
                 result = agent.summarize({}, f"http://127.0.0.1:{server.server_port}/v1", "test-key", "auto")
             self.assertEqual(result["summary"], "검토 완료")
             self.assertEqual(result["tool_calls"], {"read": 3})
+            self.assertEqual(len(result["routing"]), 2)
+            self.assertEqual(result["routing"][0]["provider"], "reader-provider")
+            self.assertEqual(result["generator"]["provider"], "writer-provider")
+            self.assertEqual(result["generator"]["model"], "writer-model")
+            self.assertEqual(result["generator"]["response_model"], "body-writer")
+            self.assertEqual(result["generator"]["fallback_attempts"], "1")
+            self.assertNotIn("private-connection-id", json.dumps(result))
+            report = drift.routing_report({**result, "requested_model": "auto"})
+            self.assertIn("writer-provider", report)
+            self.assertIn("body-writer", report)
             self.assertEqual(len(requests), 2)
             headers = {key.lower(): value for key, value in requests[0][0].items()}
             self.assertEqual(headers["authorization"], "Bearer test-key")

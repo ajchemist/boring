@@ -178,7 +178,8 @@ def summarize(facts, base, key, model):
         # Only the gateway key is made available to Pi; no GitHub token or host credentials.
         env = {k: os.environ[k] for k in ("PATH", "LANG", "TMPDIR", "SSL_CERT_FILE") if k in os.environ}
         env.update(HOME=str(root), PI_CODING_AGENT_DIR=str(config), PI_OFFLINE="1",
-                   PI_TELEMETRY="0", OMNIROUTE_API_KEY=key)
+                   PI_TELEMETRY="0", OMNIROUTE_API_KEY=key,
+                   DRIFT_PI_TRACE=str(config / "routing.json"))
         command = ["bun", "run", "--bun", "pi", "--print", "--mode", "json", "--no-session",
                    "--provider", "omniroute", "--model", model, "--thinking", "off",
                    "--tools", TOOLS, "--no-extensions", "--no-skills", "--no-prompt-templates",
@@ -186,9 +187,31 @@ def summarize(facts, base, key, model):
                    "--extension", str(SCRIPT_DIR / "drift_pi_guard.mjs"),
                    "--system-prompt", PROMPT, "--",
                    "Read facts.json, upstream.patch and fork.patch using tools; inspect relevant source and write today's briefing."]
-        result = run_pi(command, env, workspace)
-        result["model"] = model
+        try:
+            result = run_pi(command, env, workspace)
+        except Exception as error:
+            error.routing = read_routing(config / "routing.json")
+            raise
+        result["routing"] = read_routing(config / "routing.json")
+        if result["routing"] and result["routing"][-1].get("stop_reason") == "stop":
+            result["generator"] = result["routing"][-1]
         return result
+
+
+def read_routing(path):
+    return json.loads(path.read_text()) if path.exists() else []
+
+
+def redact(value, secrets):
+    if isinstance(value, dict):
+        return {k: redact(v, secrets) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact(v, secrets) for v in value]
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret:
+                value = value.replace(secret, "[redacted]")
+    return value
 
 
 def main():
@@ -205,18 +228,16 @@ def main():
             result = summarize(facts, base, key, model)
         except Exception as error:
             kind = type(error).__name__
-            result = {"status": f"Pi 에이전트 브리핑 실패({kind}). Git 집계 결과만 게시합니다."}
+            result = {"status": f"Pi 에이전트 브리핑 실패({kind}). Git 집계 결과만 게시합니다.",
+                      "routing": getattr(error, "routing", [])}
             print(f"::warning::Pi briefing failed ({kind}); publishing measured facts")
+    result.update(requested_model=model, harness=f"Pi coding agent {PI_VERSION}")
     # Never print raw Pi events or stderr: provider diagnostics may contain credentials.
     try:
         host = urlsplit(base).netloc
     except ValueError:
         host = ""
-    for field in ("summary", "status", "model"):
-        if field in result:
-            for secret in (key, base, host):
-                if secret:
-                    result[field] = result[field].replace(secret, "[redacted]")
+    result = redact(result, (key, base, host))
     (output / "ai.json").write_text(json.dumps(result, ensure_ascii=False))
     if result.get("status") == "ok":
         print(f"Pi completed; successful tool calls: {json.dumps(result['tool_calls'])}")

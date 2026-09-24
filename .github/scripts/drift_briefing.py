@@ -92,6 +92,34 @@ def commit_list(items, repo, total):
     return "\n".join(lines) or "없음."
 
 
+def routing_report(ai):
+    def field(record, name):
+        return safe(str(record.get(name) or "미제공"))
+
+    lines = [f"요청 경로: {safe(ai['requested_model'])}"]
+    generator = ai.get("generator", {}) if ai.get("summary") else {}
+    if ai.get("summary"):
+        model_field = "model" if generator.get("model") else "response_model"
+        source = "OmniRoute 응답 헤더" if generator.get("model") else "응답 본문/Pi"
+        lines.append(f"최종 브리핑 생성: provider **{field(generator, 'provider')}** / "
+                     f"model **{field(generator, model_field)}** (model: {source} 기준)")
+    else:
+        lines.append("최종 브리핑 생성 모델: 없음 — AI 브리핑 미완료")
+    attempts = ai.get("routing", [])
+    if attempts:
+        lines += ["<details><summary>Pi 호출별 라우팅 기록</summary>\n",
+                  "| 호출 | 턴 | HTTP | provider (헤더) | model (헤더) | model (본문/Pi) | 종료 | fallback 횟수 |",
+                  "| ---: | ---: | --- | --- | --- | --- | --- | --- |"]
+        for index, attempt in enumerate(attempts[-32:], 1):
+            values = [field(attempt, key) for key in (
+                "turn", "http_status", "provider", "model", "response_model", "stop_reason", "fallback_attempts")]
+            lines.append(f"| {index} | " + " | ".join(values) + " |")
+        lines += ["\n헤더와 본문의 모델 이름은 서로 다를 수 있어 별도로 표시합니다. "
+                  "미제공 값은 추정하지 않습니다. OmniRoute 내부 재시도 전체 경로는 이 기록에 포함되지 않습니다.",
+                  "\n</details>"]
+    return "\n\n".join(lines[:2]) + "\n\n" + "\n".join(lines[2:])
+
+
 def render(data, ai):
     ahead, behind = data["ahead"], data["behind"]
     if ahead and behind:
@@ -106,11 +134,11 @@ def render(data, ai):
     ai_text = ai.get("summary") or ai.get("status", "AI 요약을 실행하지 않았습니다.")
     # Generated prose cannot create mentions or forge our deduplication marker.
     ai_text = ai_text.replace("@", "＠").replace("<!--", "&lt;!--")[:6500]
-    if ai.get("summary") and ai.get("model"):
-        ai_text += f"\n\n모델: {safe(ai['model'])}"
+    if ai.get("requested_model"):
+        ai_text += "\n\n" + routing_report(ai)
     if ai.get("harness"):
         calls = ", ".join(f"{safe(tool)} {count}회" for tool, count in ai.get("tool_calls", {}).items())
-        ai_text += f"\n\n하네스: {safe(ai['harness'])} · 도구 실행: {calls}"
+        ai_text += f"\n\n하네스: {safe(ai['harness'])} · 확인된 도구 실행: {calls or '없음'}"
     sections = [
         f"<!-- boring-upstream-drift:{data['date']} -->",
         f"# Upstream / fork 드리프트 — {data['date']} (KST)",

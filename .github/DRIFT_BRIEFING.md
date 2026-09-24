@@ -51,6 +51,20 @@ and required evidence reads must have succeeded. The issue includes the Pi
 version and successful tool-call counts. Thinking and intermediate messages are
 not published. Issue creation remains a separate deterministic workflow step.
 
+The issue distinguishes the requested route (`auto` or a configured combo) from
+the provider/model reported by OmniRoute's `x-omniroute-provider` and
+`x-omniroute-model` response headers. Pi's `after_provider_response` and
+`message_end` extension hooks record each visible HTTP response and its terminal
+status in a private temporary sidecar. The last completed answer is identified
+as the briefing generator; earlier tool turns can use different models. Pi's
+`responseModel` (response body) is shown separately because gateway headers and
+streamed model names can disagree. Missing metadata is explicitly unknown, never
+inferred from the model's prose or the configured `omniroute` provider alias.
+Failed runs retain available routing records and have no briefing generator.
+Fallback counts are shown only when returned by the gateway; individual internal
+gateway retries are not observable through this hook. Only allowlisted metadata
+is retained, never connection IDs, authorization headers or error bodies.
+
 Agent setup, tool-loop or inference failures produce a workflow warning and an explicit
 notice in the issue; deterministic Git facts are still published. Missing
 credentials skip inference. Provider fallback follows the server's routing policy. Inspect the
