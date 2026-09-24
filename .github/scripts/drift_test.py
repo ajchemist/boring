@@ -1,4 +1,5 @@
 import json
+import io
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -131,17 +132,55 @@ class OmniRouteTests(unittest.TestCase):
             self.assertIn("생략", json.loads(Path(folder, "ai.json").read_text())["status"])
 
     def test_model_failure_still_leaves_publishable_status(self):
-        env = dict(OMNIROUTE_PROVIDER="test", OMNIROUTE_MODEL="test/model",
-                   OMNIROUTE_PROVIDER_API_KEY="secret-value")
+        env = dict(OMNIROUTE_BASE_URL="https://gateway.example.invalid/v1",
+                   OMNIROUTE_API_KEY="secret-value")
         with tempfile.TemporaryDirectory() as folder:
             Path(folder, "facts.json").write_text("{}")
             with patch.dict(os.environ, env), patch("sys.argv", ["test", folder]), \
-                    patch.object(omni, "summarize", side_effect=ValueError("secret-value")), \
-                    patch.object(omni.subprocess, "run"):
+                    patch.object(omni, "summarize", side_effect=ValueError("secret-value")):
                 omni.main()
             result = Path(folder, "ai.json").read_text()
             self.assertIn("실패", result)
             self.assertNotIn("secret-value", result)
+
+    def test_endpoint_normalization(self):
+        for base in ("https://gateway.invalid", "https://gateway.invalid/",
+                     "https://gateway.invalid/v1", "https://gateway.invalid/v1/"):
+            self.assertEqual(omni.api_base(base), "https://gateway.invalid/v1")
+        self.assertEqual(omni.api_base("https://gateway.invalid/proxy/v1/"),
+                         "https://gateway.invalid/proxy/v1")
+        for base in ("http://gateway.invalid", "https://user:pass@gateway.invalid",
+                     "https://gateway.invalid?key=secret"):
+            with self.assertRaises(ValueError):
+                omni.api_base(base)
+
+    def test_authenticated_request_and_no_redirect(self):
+        response = io.BytesIO(b'{"choices": []}')
+        with patch.object(omni.urllib.request, "build_opener") as build:
+            build.return_value.open.return_value = response
+            omni.request("https://gateway.invalid/v1", "test-key", {"model": "auto/chat"})
+        req = build.return_value.open.call_args.args[0]
+        self.assertEqual(req.full_url, "https://gateway.invalid/v1/chat/completions")
+        self.assertEqual(req.get_header("Authorization"), "Bearer test-key")
+        self.assertEqual(req.get_header("User-agent"), "boring-drift-briefing/1.0")
+        self.assertEqual(json.loads(req.data)["model"], "auto/chat")
+        self.assertIsNone(omni.NoRedirect().redirect_request(None, None, 302, "", {}, "https://other.invalid"))
+
+    def test_combo_default_and_credentials_are_redacted(self):
+        env = dict(OMNIROUTE_BASE_URL="https://gateway.invalid/v1", OMNIROUTE_API_KEY="secret-value")
+        with tempfile.TemporaryDirectory() as folder:
+            Path(folder, "facts.json").write_text("{}")
+            with patch.dict(os.environ, env, clear=True), patch("sys.argv", ["test", folder]), \
+                    patch.object(omni, "summarize", return_value={
+                        "summary": "secret-value https://gateway.invalid/v1 gateway.invalid",
+                        "model": "auto/chat", "status": "ok",
+                    }) as summarize:
+                omni.main()
+            self.assertEqual(summarize.call_args.args[-1], "auto")
+            result = json.loads(Path(folder, "ai.json").read_text())
+            self.assertEqual(result["status"], "ok")
+            self.assertNotIn("secret-value", result["summary"])
+            self.assertNotIn("gateway.invalid", result["summary"])
 
 
 if __name__ == "__main__":

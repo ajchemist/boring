@@ -47,18 +47,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/drift_briefing.py collect --output "$RUNNER_TEMP/drift"
 
-      - name: Summarize through an ephemeral OmniRoute container
+      - name: Summarize through the OmniRoute gateway
         env:
-          OMNIROUTE_PROVIDER: ${{ vars.OMNIROUTE_PROVIDER }}
+          OMNIROUTE_BASE_URL: ${{ secrets.OMNIROUTE_BASE_URL }}
+          OMNIROUTE_API_KEY: ${{ secrets.OMNIROUTE_API_KEY }}
           OMNIROUTE_MODEL: ${{ vars.OMNIROUTE_MODEL }}
-          OMNIROUTE_PROVIDER_API_KEY: ${{ secrets.OMNIROUTE_PROVIDER_API_KEY }}
         run: python3 .github/scripts/drift_omniroute.py "$RUNNER_TEMP/drift"
 
       - name: Publish today's issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 .github/scripts/drift_briefing.py publish --output "$RUNNER_TEMP/drift"
-
-      - name: Remove OmniRoute and its ephemeral credentials
-        if: always()
-        run: docker rm -f -v boring-drift-omniroute >/dev/null 2>&1 || true

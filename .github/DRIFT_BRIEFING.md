@@ -17,22 +17,25 @@ Configure these under Settings → Secrets and variables → Actions:
 
 | Type | Name | Value |
 | --- | --- | --- |
-| Secret | `OMNIROUTE_PROVIDER_API_KEY` | Provider API key |
-| Variable | `OMNIROUTE_PROVIDER` | OmniRoute provider ID |
-| Variable | `OMNIROUTE_MODEL` | Explicit provider-prefixed model ID |
+| Secret | `OMNIROUTE_BASE_URL` | HTTPS gateway base URL, optionally ending in `/v1` |
+| Secret | `OMNIROUTE_API_KEY` | Gateway inference API key |
+| Variable | `OMNIROUTE_MODEL` | Optional model/combo ID; defaults to `auto` |
 
-Use a provider/model available to that key, not an automatic routing combo.
-The runner starts `diegosouzapw/omniroute:3.8.50` pinned by manifest digest, logs into its management API
-with a random temporary password, registers the provider, and creates an
-inference key restricted to that connection. Its listener binds to loopback;
-its database lives in tmpfs and the container is removed after each run.
-Provider credentials are sent via the management API, not printed or cached.
+The runner calls the existing gateway's `/v1/chat/completions` endpoint with
+Bearer authentication. Providers, their multiple API keys, routing policies,
+fallbacks and usage state are managed on that server. The workflow does not
+provision a container or change the server's configuration. `auto` delegates
+model selection to OmniRoute; a configured named combo can be used instead.
+The gateway must be reachable from GitHub-hosted runners and permit inference
+with this key. Requests use `boring-drift-briefing/1.0` as the User-Agent and
+reject redirects so the bearer key stays at the configured destination.
+The endpoint and key are never printed or included in the issue.
 Only bounded commit metadata, filenames and aggregate counts reach the model.
 The model has no shell, GitHub token or repository write tools.
 
 AI setup or inference failures produce a workflow warning and an explicit
 notice in the issue; deterministic Git facts are still published. Missing
-credentials do not silently route to a different/free provider. Inspect the
+credentials skip inference. Provider fallback follows the server's routing policy. Inspect the
 issue's AI section to confirm that inference succeeded.
 
 ## Interpreting the report

@@ -1,30 +1,42 @@
-"""Summarize measured facts using an isolated, disposable OmniRoute server."""
+"""Summarize measured facts through the configured remote OmniRoute gateway."""
 
-import http.client
-import http.cookiejar
 import json
 import os
 from pathlib import Path
-import secrets
-import subprocess
 import sys
-import time
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
-# Multi-platform manifest digest for 3.8.50; upgrades are deliberate.
-IMAGE = "diegosouzapw/omniroute:3.8.50@sha256:085c57adf499a8aaa9f35ccde95c0df9c11bd9ecd18d6c9edbf3b68b8079ba9d"
-CONTAINER = "boring-drift-omniroute"
-BASE = "http://127.0.0.1:20128"
+DEFAULT_MODEL = "auto"
 
 
-def request(client, path, body=None, key=None, timeout=30):
-    headers = {"Content-Type": "application/json"}
-    if key:
-        headers["Authorization"] = f"Bearer {key}"
-    req = urllib.request.Request(BASE + path, headers=headers,
-                                 data=json.dumps(body).encode() if body is not None else None)
-    with client.open(req, timeout=timeout) as response:
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # Keep the bearer credential at exactly the configured destination.
+        return None
+
+
+def api_base(value):
+    parsed = urlsplit(value.strip())
+    if (parsed.scheme != "https" or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment):
+        raise ValueError("OMNIROUTE_BASE_URL must be an HTTPS base URL")
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/v1"):
+        path += "/v1"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+
+def request(base, key, body):
+    headers = {
+        "Content-Type": "application/json", "Accept": "application/json",
+        "User-Agent": "boring-drift-briefing/1.0", "Authorization": f"Bearer {key}",
+    }
+    req = urllib.request.Request(api_base(base) + "/chat/completions", headers=headers,
+                                 data=json.dumps(body).encode())
+    client = urllib.request.build_opener(NoRedirect())
+    with client.open(req, timeout=180) as response:
         return json.load(response)
 
 
@@ -53,41 +65,11 @@ def prompt(facts):
     ]
 
 
-def summarize(facts, provider, model, provider_key):
-    password = secrets.token_urlsafe(32)
-    env = dict(os.environ, INITIAL_PASSWORD=password, JWT_SECRET=secrets.token_urlsafe(48))
-    subprocess.run(["docker", "pull", IMAGE], check=True, timeout=240,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    subprocess.run([
-        "docker", "run", "--detach", "--rm", "--name", CONTAINER,
-        "--publish", "127.0.0.1:20128:20128", "--memory", "3g", "--cpus", "2",
-        "--tmpfs", "/app/data:rw,uid=1000,gid=1000,mode=0700",
-        "--env", "INITIAL_PASSWORD", "--env", "JWT_SECRET",
-        "--env", "AUTH_COOKIE_SECURE=false", "--env", "OMNIROUTE_MEMORY_MB=1536",
-        IMAGE,
-    ], env=env, check=True, timeout=60, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    client = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
-    deadline = time.monotonic() + 180
-    while True:
-        try:
-            request(client, "/api/health", timeout=5)
-            break
-        except (OSError, http.client.HTTPException, json.JSONDecodeError):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("OmniRoute readiness timed out") from None
-            time.sleep(3)
-    request(client, "/api/auth/login", {"password": password})
-    connection = request(client, "/api/providers", {
-        "provider": provider, "name": "Daily drift briefing", "apiKey": provider_key,
-    })["connection"]
-    key = request(client, "/api/keys", {
-        "name": "Daily drift briefing", "noLog": True,
-        "allowedConnections": [connection["id"]],
-    })["key"]
-    result = request(client, "/v1/chat/completions", {
+def summarize(facts, base, key, model):
+    result = request(base, key, {
         "model": model, "stream": False, "max_tokens": 1800,
         "messages": prompt(facts),
-    }, key=key, timeout=120)
+    })
     choice = result["choices"][0]
     summary = choice["message"]["content"]
     if not isinstance(summary, str) or not summary.strip():
@@ -100,22 +82,32 @@ def summarize(facts, provider, model, provider_key):
 def main():
     output = Path(sys.argv[1])
     facts = json.loads((output / "facts.json").read_text())
-    values = [os.environ.get(k, "").strip() for k in
-              ("OMNIROUTE_PROVIDER", "OMNIROUTE_MODEL", "OMNIROUTE_PROVIDER_API_KEY")]
-    if not all(values):
-        result = {"status": "OmniRoute provider/model 변수 또는 API key Secret이 없어 AI 요약을 생략했습니다."}
-        print("::warning::Configure OMNIROUTE_PROVIDER, OMNIROUTE_MODEL and OMNIROUTE_PROVIDER_API_KEY")
+    base = os.environ.get("OMNIROUTE_BASE_URL", "").strip()
+    key = os.environ.get("OMNIROUTE_API_KEY", "").strip()
+    model = os.environ.get("OMNIROUTE_MODEL", "").strip() or DEFAULT_MODEL
+    if not base or not key:
+        result = {"status": "OmniRoute endpoint 또는 API key Secret이 없어 AI 요약을 생략했습니다."}
+        print("::warning::Configure OMNIROUTE_BASE_URL and OMNIROUTE_API_KEY secrets")
     else:
         try:
-            result = summarize(facts, *values)
+            result = summarize(facts, base, key, model)
         except Exception as error:
-            # Do not log response bodies or subprocess environments: they may contain keys.
+            # URLs and response bodies may contain credentials; log only the error type/status.
             kind = type(error).__name__
+            if isinstance(error, urllib.error.HTTPError):
+                kind += f" {error.code}"
             result = {"status": f"OmniRoute AI 요약 실패({kind}). Git 집계 결과만 게시합니다."}
             print(f"::warning::OmniRoute summary failed ({kind}); publishing measured facts")
-        finally:
-            subprocess.run(["docker", "rm", "-f", "-v", CONTAINER], timeout=30,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    # Neither a provider error nor model output may disclose the supplied secrets.
+    try:
+        host = urlsplit(base).netloc
+    except ValueError:
+        host = ""
+    for field in ("summary", "status", "model"):
+        if field in result:
+            for secret in (key, base, host):
+                if secret:
+                    result[field] = result[field].replace(secret, "[redacted]")
     (output / "ai.json").write_text(json.dumps(result, ensure_ascii=False))
 
 
