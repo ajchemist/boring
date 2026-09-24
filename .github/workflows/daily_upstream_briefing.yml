@@ -1,0 +1,64 @@
+name: Daily upstream drift briefing
+
+on:
+  schedule:
+    # 09:17 Asia/Seoul. GitHub schedules can run later under load.
+    - cron: '17 0 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/daily_upstream_briefing.yml'
+      - '.github/scripts/drift_*'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: daily-upstream-briefing-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: python3 -m unittest discover -s .github/scripts -p 'drift_test.py' -v
+
+  briefing:
+    if: github.repository == 'ajchemist/boring' && github.event_name != 'pull_request'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Measure upstream and fork drift
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/drift_briefing.py collect --output "$RUNNER_TEMP/drift"
+
+      - name: Summarize through an ephemeral OmniRoute container
+        env:
+          OMNIROUTE_PROVIDER: ${{ vars.OMNIROUTE_PROVIDER }}
+          OMNIROUTE_MODEL: ${{ vars.OMNIROUTE_MODEL }}
+          OMNIROUTE_PROVIDER_API_KEY: ${{ secrets.OMNIROUTE_PROVIDER_API_KEY }}
+        run: python3 .github/scripts/drift_omniroute.py "$RUNNER_TEMP/drift"
+
+      - name: Publish today's issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 .github/scripts/drift_briefing.py publish --output "$RUNNER_TEMP/drift"
+
+      - name: Remove OmniRoute and its ephemeral credentials
+        if: always()
+        run: docker rm -f -v boring-drift-omniroute >/dev/null 2>&1 || true
