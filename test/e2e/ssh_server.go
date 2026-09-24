@@ -267,7 +267,11 @@ func handleForwardedConnection(channel ssh.Channel, extra []byte) {
 		return
 	}
 	defer conn.Close()
-	go io.Copy(conn, channel)
+	go func() {
+		io.Copy(conn, channel)
+		// Propagate EOF through ProxyJump so the destination sees disconnects.
+		conn.(*net.TCPConn).CloseWrite()
+	}()
 	io.Copy(channel, conn)
 }
 
