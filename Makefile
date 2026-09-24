@@ -23,18 +23,18 @@ TEST_BINARY := boring.test
 default: build
 
 build:
-	go build -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/boring ./cmd/boring
+	go build -trimpath -ldflags "$(LDFLAGS)" -o $(DIST_DIR)/boring ./cmd/boring
 
 build-grid:
+	test -n "$(TAG)"
 	mkdir -p $(DIST_DIR)
-	$(foreach os,darwin linux, \
-		$(foreach arch,arm64 amd64, \
-			echo "Building for $(os)/$(arch)"; \
-			GOOS=$(os) GOARCH=$(arch) $(MAKE) build; \
-			tar -czf $(DIST_DIR)/boring-$(TAG)-$(os)-$(arch).tar.gz LICENSE -C $(DIST_DIR) boring; \
-			rm -f $(DIST_DIR)/boring; \
-		) \
-	)
+	set -eu; for os in darwin linux; do \
+		for arch in arm64 amd64; do \
+			CGO_ENABLED=0 GOOS=$$os GOARCH=$$arch $(MAKE) build DIST_DIR=$(DIST_DIR)/$$os-$$arch; \
+			tar -czf $(DIST_DIR)/boring-$(TAG)-$$os-$$arch.tar.gz LICENSE -C $(DIST_DIR)/$$os-$$arch boring; \
+		done; \
+	done
+	cd $(DIST_DIR) && shasum -a 256 boring-$(TAG)-*.tar.gz > SHA256SUMS
 
 build-test:
 	go build -o $(TEST_BINARY) ./cmd/boring

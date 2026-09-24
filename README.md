@@ -83,6 +83,22 @@ Currently, supported options at tunnel level are:
 | `port`        | SSH port. If not set, tries to read it from SSH config, defaulting to `22`.                                                                                                        |
 | `group`        | Group that the tunnel is assigned to. Groups are only shown in `list` view if at least one tunnel has a group assigned. Can be used for grouped `open`, `close`, and `list`.                         |
 
+`backend = "openssh"` opts a TCP `mode = "socks"` tunnel into system OpenSSH
+on macOS or Linux (`/usr/bin/ssh` on macOS, `ssh` from PATH on Linux). Omit it (or use `"go"`) for the existing Go backend.
+OpenSSH reads `BORING_SSH_CONFIG` via `-F`, including `ProxyJump`,
+`SecurityKeyProvider`, and `AddKeysToAgent`. It owns authentication and SOCKS;
+boring manages startup, shutdown, and reconnection. No new dependencies are required.
+
+For agent-independent Secure Enclave authentication on macOS, set
+`IdentityAgent none` and `AddKeysToAgent no` for **both the destination and jump
+hosts**, alongside the existing `IdentityFile` and `SecurityKeyProvider`.
+OpenSSH needs an unlocked, accessible key; boring does not relay terminal prompts.
+Startup times out after 60 seconds. Unknown host keys must be trusted beforehand.
+Each tunnel uses its own control socket; `ControlMaster`, `ControlPersist`,
+`ForkAfterAuthentication`, and `PermitLocalCommand` are overridden to keep its
+process lifecycle under boring's control. Other forwarding modes and Windows
+are not supported by this backend.
+
 Options that can be provided at global and tunnel level (tunnel level takes precedence):
 
 | **Option**    | **Description**                                                                                                     |
@@ -104,6 +120,26 @@ You can influence the behavior of `boring` via a couple of environment variables
 </details>
 
 ## Installation
+
+### This fork's release binaries
+
+[Releases](https://github.com/ajchemist/boring/releases) include versioned archives
+and `SHA256SUMS`. Pushing a `v*` tag runs tests on macOS arm64 and Linux amd64/arm64,
+then builds and publishes all four targets. Tags containing `-` are prereleases.
+Linux binaries use `CGO_ENABLED=0`; the OpenSSH backend still needs `ssh` in PATH.
+
+| Nix system | Archive target |
+|------------|----------------|
+| `aarch64-darwin` | `darwin-arm64` |
+| `x86_64-darwin` | `darwin-amd64` |
+| `x86_64-linux` | `linux-amd64` |
+| `aarch64-linux` | `linux-arm64` |
+
+Download URL: `https://github.com/ajchemist/boring/releases/download/<tag>/boring-<tag>-<target>.tar.gz`.
+Each archive contains `boring` and `LICENSE`. Pin both the tag and archive SHA-256
+in Nix; keep the existing `BORING_SSH_CONFIG` wrapper. On Linux, add OpenSSH to the
+wrapper's PATH. On macOS the backend uses Apple's `/usr/bin/ssh` directly.
+Restart the existing boring daemon when switching binaries.
 
 ### Homebrew
 

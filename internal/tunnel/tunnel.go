@@ -35,6 +35,7 @@ type Desc struct {
 	KeepAlive     *int        `toml:"keep_alive" json:"keep_alive"`
 	Group         string      `toml:"group" json:"group"`
 	Mode          Mode        `toml:"mode" json:"mode"`
+	Backend       string      `toml:"backend" json:"backend"`
 	Status        Status      `toml:"-" json:"status"`
 	LastConn      time.Time   `toml:"-" json:"last_conn"`
 }
@@ -63,6 +64,13 @@ func FromDesc(desc *Desc) *Tunnel {
 }
 
 func (t *Tunnel) Open() (err error) {
+	switch t.Backend {
+	case "openssh":
+		return t.openSSH()
+	case "", "go":
+	default:
+		return fmt.Errorf("unknown backend %q", t.Backend)
+	}
 	if !t.prepared {
 		if err = t.prepare(); err != nil {
 			return err

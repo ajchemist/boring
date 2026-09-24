@@ -124,7 +124,8 @@ func daemonWithCancel(env []string) (context.CancelFunc, error) {
 	// Wait for daemon to start
 	wait := time.NewTimer(0.)
 	waitTime := 2 * time.Millisecond
-	timeout := time.After(500 * time.Millisecond)
+	// A freshly built binary can take longer to start on macOS/CI.
+	timeout := time.After(5 * time.Second)
 	sock := getEnv(env, "BORING_SOCK")
 
 	for {
