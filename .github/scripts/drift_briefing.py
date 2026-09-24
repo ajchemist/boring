@@ -108,6 +108,9 @@ def render(data, ai):
     ai_text = ai_text.replace("@", "＠").replace("<!--", "&lt;!--")[:6500]
     if ai.get("summary") and ai.get("model"):
         ai_text += f"\n\n모델: {safe(ai['model'])}"
+    if ai.get("harness"):
+        calls = ", ".join(f"{safe(tool)} {count}회" for tool, count in ai.get("tool_calls", {}).items())
+        ai_text += f"\n\n하네스: {safe(ai['harness'])} · 도구 실행: {calls}"
     sections = [
         f"<!-- boring-upstream-drift:{data['date']} -->",
         f"# Upstream / fork 드리프트 — {data['date']} (KST)",
